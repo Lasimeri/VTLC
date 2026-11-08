@@ -1,0 +1,15 @@
+# VTLC format version 1
+
+All integers are unsigned little-endian. The header contains four bytes ASCII `VTLC`; u16 version 1; u8 dtype 1 (FP32); u8 byte-order 1 (little endian); u32 rank, temporal axis, tile elements, keyframe interval; u64 element count; and rank u64 dimensions. Rank is 1–32, shape product equals element count. Tensor ordering is row-major.
+
+Frames are serialized in time order, with each frame in row-major order excluding the temporal axis. Each tile header has u8 predictor, u8 codec, u16 flags, u32 element count and u64 payload length. Flag 0 means no checksum; flag 1 adds a u32 CRC-32/ISO-HDLC before payload. CRC covers predictor and codec bytes, little-endian element count, and payload; it does not cover tensor header fields and is not authentication.
+
+Predictor 0 is zero; 1 is the previous-frame word; 2 is twice the previous word minus the second previous word modulo 2^32; 3 is fused `fma(2.0f, previous, -previous2)`, rounded nearest-even with FTZ and DAZ disabled. When either operand or the result is not a finite normal FP32 value, predictor 3 uses the previous word. The caller's x86 MXCSR is restored. Non-x86 builds reject predictor 3. At a keyframe only predictor 0 is valid; the second frame allows 0 or 1. The residual is actual XOR predictor.
+
+Codec 0 is raw little-endian u32 residuals. Codec 1 packs blocks of at most 128 words: one byte width 0–32, followed by width bits per word, least-significant bit first, rounded to a byte boundary per block. Codec 2 is a Zstandard frame decoded to little-endian u32 residuals. Codec 3 is Zstandard of bitshuffled words: for each group of eight words, 32 bytes hold successive bit positions, with bit k of each byte from word k; remaining words are little-endian raw. Codec 4 contains unsigned base-128 varint runs: token is `(count<<1)|literal`, followed by count little-endian u32 values if literal is 1. Codec 5 is a little-endian bitstream: zero uses control bit 0; nonzero uses 1 and then a reuse flag (0 reuse, 1 new). A new window contains 5-bit leading-zero count, 5-bit significant-width-minus-one, then significant bits. Reuse emits the previous window's width; bit fields are least-significant bit first. Padding must be zero. Zstandard outputs must have exactly 4 bytes per residual; dictionaries are not used.
+
+The decoder rejects trailing data, invalid widths, predictor histories and lengths, bad checksums and truncated streams. Some corruptions, including altered unchecked header fields, can be undetectable.
+
+# VTS1 finite streaming envelope
+
+`VTS1` magic, u32 version 1, u32 frame rank, zero u32 reserved, u64 frame count, u64 chunk count, and frame-rank u64 dimensions are followed by pairs of u64 byte length and standalone VTLC container bytes. Each chunk has axis zero, matching frame shape, and its own first keyframe. The stream decoder borrows input bytes; they must remain valid through decoding. `take_chunk()` can emit standalone VTLC tensors continuously; the application retains their order. `finish()` builds one VTS1 envelope and retains completed chunks until then; `finish_chunks()` returns the remainder of a drained stream.
