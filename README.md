@@ -2,6 +2,61 @@
 
 VTLC is a C++20 bitwise-lossless temporal FP32 tensor codec with a C interface. It implements integer and fused floating-point predictors, XOR residuals, several lossless residual encodings, independent streaming chunks, and runtime scalar, AVX2/FMA and AVX-512F dispatch. This is a research-grade implementation, **not yet production-ready**: see limitations below. No Python is used.
 
+## Architecture
+
+```text
+  Contiguous FP32 tensor + shape + options
+                    |
+                    v
+       +---------------------------+
+       | Gather frames, split tiles|
+       | Reset history at keyframes|
+       +-------------+-------------+
+                     |
+                     v
+       +---------------------------+       scalar / AVX2 / AVX-512F
+       | Choose temporal predictor |<------ runtime CPU dispatch
+       | XOR prediction with bits  |
+       +-------------+-------------+
+                     |
+                     v
+       +---------------------------+
+       | Raw / packed / zero runs  |
+       | Gorilla / bitshuffle+zstd |
+       | Select an evaluated mode  |
+       +-------------+-------------+
+                     |
+                     v
+       +---------------------------+
+       | VTLC header + tile records|
+       | optional CRC + payloads   |
+       +-------------+-------------+
+                     |
+                     v
+       +---------------------------+
+       | Decode residuals, predict,|
+       | XOR, and scatter FP32 bits|
+       +-------------+-------------+
+                     |
+                     v
+          Original shape + FP32 bits
+
+  Streaming: frames -> independent VTLC chunks -> sequential or parallel decode
+```
+
+The history used by a tile comes from earlier frames within the current keyframe interval. Each streaming chunk is a standalone VTLC tensor. The exact bitwise invariant and the implementation's resource and integrity limits are described in the documentation below.
+
+## Documentation
+
+- [Build, installation, and platform support](docs/BUILD.md)
+- [C++ and C API reference](docs/API.md)
+- [Streaming and chunk access guide](docs/STREAMING.md)
+- [Architecture and predictor behavior](docs/ARCHITECTURE.md)
+- [VTLC and VTS1 binary formats](docs/FORMAT.md)
+- [Testing, sanitizers, and fuzzing](docs/TESTING.md)
+- [Benchmark methodology and recorded results](docs/BENCHMARKS.md)
+- [Integrity, memory, and deployment limitations](docs/SECURITY.md)
+
 ## Build and run
 
 Requires CMake 3.16+ and a C++20 compiler. Zstandard development headers and library are enabled by default; set `-DVTLC_ZSTD=OFF` to build without it. Such builds reject containers containing Zstandard tiles.

@@ -13,3 +13,55 @@ The decoder rejects trailing data, invalid widths, predictor histories and lengt
 # VTS1 finite streaming envelope
 
 `VTS1` magic, u32 version 1, u32 frame rank, zero u32 reserved, u64 frame count, u64 chunk count, and frame-rank u64 dimensions are followed by pairs of u64 byte length and standalone VTLC container bytes. Each chunk has axis zero, matching frame shape, and its own first keyframe. The stream decoder borrows input bytes; they must remain valid through decoding. `take_chunk()` can emit standalone VTLC tensors continuously; the application retains their order. `finish()` builds one VTS1 envelope and retains completed chunks until then; `finish_chunks()` returns the remainder of a drained stream.
+
+# Field reference and parsing order
+
+All offsets below are byte offsets relative to the beginning of the respective record. Integers are little-endian. Lengths refer to bytes unless explicitly stated otherwise.
+
+## VTLC tensor header
+
+| Offset | Type | Field | Constraint |
+|---:|---|---|---|
+| 0 | 4 bytes | Magic | ASCII `VTLC`. |
+| 4 | u16 | Version | `1`. |
+| 6 | u8 | Dtype | `1`, FP32 represented as 32-bit words. |
+| 7 | u8 | Byte order | `1`, little-endian serialized words. |
+| 8 | u32 | Rank | 1–32. |
+| 12 | u32 | Time axis | Less than rank. |
+| 16 | u32 | Tile elements | Nonzero. |
+| 20 | u32 | Keyframe interval | Nonzero. |
+| 24 | u64 | Element count | Product of dimensions. |
+| 32 | rank × u64 | Shape | Dimensions in original row-major order. |
+
+The first tile begins at `32 + 8 * rank`. If the time dimension is zero or the product of the remaining dimensions is zero, the container has no tile records. Otherwise each frame has enough consecutive tiles to cover its non-temporal elements. Tile sizes are the configured maximum except for the final tile in each frame.
+
+## Tile record
+
+| Offset | Type | Field |
+|---:|---|---|
+| 0 | u8 | Predictor ID, 0–3. |
+| 1 | u8 | Codec ID, 0–5. |
+| 2 | u16 | Flags: `0` or `1`. |
+| 4 | u32 | Decoded element count. |
+| 8 | u64 | Encoded payload length. |
+| 16 | optional u32 | CRC, present only when flags is `1`. |
+| 16 or 20 | bytes | Exactly payload-length bytes. |
+
+The next tile immediately follows the payload. A decoder must validate length arithmetic before reading or allocating and should apply its configured logical-size limit. The current decoder rejects trailing bytes after the final expected record. Header fields and record length/flags are not themselves covered by the CRC; CRC input is exactly the predictor byte, codec byte, four little-endian count bytes, and payload bytes.
+
+For example, a rank-2 shape `[2, 3]` has a 48-byte tensor header. With a tile size of at least three, two tile records follow: one for each three-element frame. The first frame can only have predictor 0; predictor 1 is also eligible for the second. Their actual payload lengths and codec IDs depend on the input and selected preset.
+
+## VTS1 stream envelope
+
+| Offset | Type | Field |
+|---:|---|---|
+| 0 | 4 bytes | ASCII `VTS1`. |
+| 4 | u32 | Version `1`. |
+| 8 | u32 | Frame rank, 0–31. |
+| 12 | u32 | Reserved, zero. |
+| 16 | u64 | Total frame count. |
+| 24 | u64 | Chunk count. |
+| 32 | rank × u64 | Frame shape, excluding time. |
+| variable | repeated | u64 chunk byte length followed by that many VTLC bytes. |
+
+Each chunk's VTLC tensor has a leading time axis and a remaining shape equal to the frame shape. Chunk frame counts sum to the envelope's frame count. A zero-frame envelope has zero chunks. Envelope construction and chunk iteration must still respect the borrowing and memory limitations in [STREAMING.md](STREAMING.md).
